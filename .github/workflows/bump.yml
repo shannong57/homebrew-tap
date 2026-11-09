@@ -1,0 +1,50 @@
+name: bump
+# Opens a tested PR when macsweep has a newer release than the formula.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  bump:
+    runs-on: macos-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare the latest release with the formula
+        id: v
+        run: |
+          tag=$(gh api repos/shannong57/macsweep/releases/latest --jq .tag_name)
+          cur=$(sed -n 's#.*/archive/refs/tags/\(v[^/]*\)\.tar\.gz".*#\1#p' Formula/macsweep.rb)
+          echo "Latest release $tag, formula has $cur"
+          new=""
+          if [ "$tag" != "$cur" ] && ! git ls-remote --exit-code --heads origin "bump/$tag" >/dev/null; then new=1; fi
+          { echo "tag=$tag"; echo "new=$new"; } >> "$GITHUB_OUTPUT"
+      - name: Update the formula
+        if: steps.v.outputs.new
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          url="https://github.com/shannong57/macsweep/archive/refs/tags/$TAG.tar.gz"
+          sha=$(curl -fsSL "$url" | shasum -a 256 | cut -d " " -f 1)
+          sed -i "" -e "s#/archive/refs/tags/v[^/]*\.tar\.gz#/archive/refs/tags/$TAG.tar.gz#" \
+            -e "s#^  sha256 \".*\"#  sha256 \"$sha\"#" Formula/macsweep.rb
+          git diff
+      - name: Install, test and audit it
+        if: steps.v.outputs.new
+        run: bash ci/check-formula.sh
+      - name: Open a PR
+        if: steps.v.outputs.new
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "bump/$TAG"
+          git commit -am "macsweep ${TAG#v}"
+          git push origin "bump/$TAG"
+          gh pr create --title "macsweep ${TAG#v}" \
+            --body "Points the formula at macsweep $TAG. Installed, tested and audited on macOS in the bump run."
